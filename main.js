@@ -1,15 +1,39 @@
 import * as THREE from 'three';
-import { OBJLoader } from 'three/addons/loaders/OBJLoader.js';
-import { MTLLoader } from 'three/addons/loaders/MTLLoader.js';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { EXRLoader } from 'three/addons/loaders/EXRLoader.js';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { FontLoader } from 'three/addons/loaders/FontLoader.js';
+import { OutlineEffect } from 'three/addons/effects/OutlineEffect.js';
+import { TextGeometry } from 'three/addons/geometries/TextGeometry.js';
 
 const scene = new THREE.Scene();
 const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+camera.rotation.order = 'YXZ';
 
-const renderer = new THREE.WebGLRenderer();
+const renderer = new THREE.WebGLRenderer({ antialias: true });
 renderer.setSize(window.innerWidth, window.innerHeight);
 document.body.appendChild(renderer.domElement);
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+
+const effect = new OutlineEffect(renderer, {
+    edgeStrength: 3.0,
+    edgeGlow: 0.1,
+    edgeThickness: 1.0,
+    pulsePeriod: 0
+});
+
+document.body.requestPointerLock = document.body.requestPointerLock || document.body.mozRequestPointerLock;
+document.exitPointerLock = document.exitPointerLock || document.mozExitPointerLock;
+document.body.addEventListener('click', () => document.body.requestPointerLock());
+
+document.addEventListener('pointerlockchange', () => {
+    if (document.pointerLockElement !== document.body) {
+        console.log('Pointer lock lost');
+    }
+});
+
+const clock = new THREE.Clock();
 
 const exrLoader = new EXRLoader();
 exrLoader.load('/resources/textures/skybox.exr', (texture) => {
@@ -18,70 +42,183 @@ exrLoader.load('/resources/textures/skybox.exr', (texture) => {
     scene.background = texture;
 });
 
-function placeOnGround(object) {
-    const bbox = new THREE.Box3().setFromObject(object);
-    const minY = bbox.min.y;
-    object.position.y -= minY;
-}
-
 const controls = new OrbitControls(camera, renderer.domElement);
 controls.enableDamping = true;
 controls.dampingFactor = 0.05;
 controls.screenSpacePanning = false;
 controls.minDistance = 2;
 controls.maxDistance = 10;
+controls.enableKeys = false;
+controls.enabled = false;
 
-const planeGeometry = new THREE.PlaneGeometry(100, 100);
-const planeMaterial = new THREE.MeshStandardMaterial({ color: 0x808080, side: THREE.DoubleSide });
-const plane = new THREE.Mesh(planeGeometry, planeMaterial);
-plane.rotation.x = -Math.PI / 2;
-scene.add(plane);
+const gltfLoader = new GLTFLoader();
+let pokerTable = null;
+let pokerTableHighlighted = false;
+let interactText = null;
 
-const mtlLoader = new MTLLoader();
+gltfLoader.load('resources/models/hall.glb', (gltf) => {
+    const hall = gltf.scene;
+    scene.add(hall);
 
-function loadModel(objFile, mtlFile, position = { x: 0, y: 0, z: 0 }) {
-    mtlLoader.setPath('/resources/models/');
-    mtlLoader.load(mtlFile, (materials) => {
-        materials.preload();
-        
-        const objLoader = new OBJLoader();
-        objLoader.setPath('/resources/models/');
-        objLoader.setMaterials(materials);
+    const pokerTablePos = hall.getObjectByName("PokerTable_Position");
+    if (pokerTablePos) {
+        gltfLoader.load('resources/models/table.glb', (tableGltf) => {
+            pokerTable = tableGltf.scene;
+            pokerTable.position.copy(pokerTablePos.position);
+            pokerTable.rotation.copy(pokerTablePos.rotation);
+            scene.add(pokerTable);
 
-        objLoader.load(objFile, (object) => {
-            object.position.set(position.x, position.y, position.z);
-            placeOnGround(object);
-            
-            object.traverse((child) => {
-                if (child.isMesh) {
-                    child.material.side = THREE.DoubleSide;
-                }
+            const fontLoader = new FontLoader();
+            fontLoader.load('https://threejs.org/examples/fonts/helvetiker_regular.typeface.json', (font) => {
+                const textGeometry = new TextGeometry('Press E to Interact', {
+                    font: font,
+                    size: 0.3,
+                    height: 1,
+                    curveSegments: 12, 
+                    bevelEnabled: false,
+                });
+                textGeometry.computeBoundingBox();
+                const textMaterial = new THREE.MeshBasicMaterial({ color: 0x333333 });
+                interactText = new THREE.Mesh(textGeometry, textMaterial);
+                interactText.geometry.center();
+                interactText.position.set(pokerTable.position.x , pokerTable.position.y + 3, pokerTable.position.z);
+                interactText.scale.set(1, 1, 0.002);
+                scene.add(interactText);
+                interactText.visible = false;
             });
-
-            scene.add(object);
-        }, undefined, (error) => {
-            console.error(`Error loading ${objFile}:`, error);
         });
-    }, undefined, (error) => {
-        console.error(`Error loading ${mtlFile}:`, error);
-    });
-}
+    }
+});
 
-// Load models
-loadModel('donut.obj', 'donut.mtl', { x: 0, y: 0, z: 0 });
-loadModel('dice.obj', 'dice.mtl', { x: 2, y: 0, z: 0 });
-
-const light = new THREE.DirectionalLight(0xffffff, 3);
+const light = new THREE.DirectionalLight(0xffffff, 1);
 light.position.set(5, 5, 5);
+light.castShadow = true;
+light.shadow.mapSize.width = 1024;
+light.shadow.mapSize.height = 1024;
+light.shadow.camera.near = 0.5;
+light.shadow.camera.far = 50;
 scene.add(light);
 
-const ambientLight = new THREE.AmbientLight(0x404040, 3);
+const ambientLight = new THREE.AmbientLight(0x404040, 2);
 scene.add(ambientLight);
 
-camera.position.z = 5;
+const groundGeometry = new THREE.PlaneGeometry(20, 20);
+const groundMaterial = new THREE.ShadowMaterial({ opacity: 0.5 });
+const ground = new THREE.Mesh(groundGeometry, groundMaterial);
+ground.rotation.x = -Math.PI / 2;
+ground.receiveShadow = true;
+scene.add(ground);
+
+camera.position.set(0, 2, 5);
+
+const keyStates = {};
+const playerVelocity = new THREE.Vector3();
+const playerDirection = new THREE.Vector3();
+
+document.addEventListener('keydown', (event) => {
+    keyStates[event.code] = true;
+});
+
+document.addEventListener('keyup', (event) => {
+    keyStates[event.code] = false;
+});
+
+document.body.addEventListener('mousemove', (event) => {
+    if (document.pointerLockElement === document.body) {
+        camera.rotation.y -= event.movementX / 500;
+        camera.rotation.x -= event.movementY / 500;
+        camera.rotation.x = Math.max(-Math.PI / 2, Math.min(Math.PI / 2, camera.rotation.x));
+    }
+});
+
+window.addEventListener('resize', onWindowResize);
+
+function onWindowResize() {
+    camera.aspect = window.innerWidth / window.innerHeight;
+    camera.updateProjectionMatrix();
+    renderer.setSize(window.innerWidth, window.innerHeight);
+}
+
+function getForwardVector() {
+    camera.getWorldDirection(playerDirection);
+    playerDirection.y = 0;
+    playerDirection.normalize();
+    return playerDirection;
+}
+
+function getSideVector() {
+    camera.getWorldDirection(playerDirection);
+    playerDirection.y = 0;
+    playerDirection.normalize();
+    playerDirection.cross(camera.up);
+    return playerDirection;
+}
+
+function playerControls(deltaTime) {
+    const speedDelta = deltaTime * 2;
+
+    if (keyStates['KeyW']) {
+        playerVelocity.add(getForwardVector().multiplyScalar(speedDelta));
+    }
+    if (keyStates['KeyS']) {
+        playerVelocity.add(getForwardVector().multiplyScalar(-speedDelta));
+    }
+    if (keyStates['KeyA']) {
+        playerVelocity.add(getSideVector().multiplyScalar(-speedDelta));
+    }
+    if (keyStates['KeyD']) {
+        playerVelocity.add(getSideVector().multiplyScalar(speedDelta));
+    }
+    
+    camera.position.add(playerVelocity);
+    playerVelocity.multiplyScalar(0.9);
+}
+
+function checkProximity() {
+    if (!pokerTable) return;
+
+    const playerPos = camera.position;
+    const tablePos = pokerTable.position;
+    const distance = playerPos.distanceTo(tablePos);
+
+    const interactDistance = 5;
+
+    if (distance < interactDistance) {
+        if (!pokerTableHighlighted) {
+            pokerTableHighlighted = true;
+            pokerTable.traverse((child) => {
+                if (child.isMesh) {
+                    child.material.emissive = new THREE.Color(0x00ff00); 
+                    child.material.emissiveIntensity = 0.3;
+                }
+            });
+            if (interactText) interactText.visible = true;
+        }
+    } else {
+        if (pokerTableHighlighted) {
+            pokerTableHighlighted = false;
+            pokerTable.traverse((child) => {
+                if (child.isMesh) {
+                    child.material.emissive = new THREE.Color(0x000000);
+                    child.material.emissiveIntensity = 0;
+                }
+            });
+            if (interactText) interactText.visible = false;
+        }
+    }
+}
+
+document.addEventListener('keydown', (event) => {
+    if (event.code === 'KeyE' && pokerTableHighlighted) {
+        alert('Interacting with Poker Table!');
+    }
+});
 
 function animate() {
-    controls.update();
+    const deltaTime = clock.getDelta();
+    playerControls(deltaTime);
+    checkProximity();
+    // effect.render(scene, camera);
     renderer.render(scene, camera);
     requestAnimationFrame(animate);
 }
